@@ -1,4 +1,17 @@
 openai
 ffmpeg-python
 python-dotenv
-pyinstaller 
+pyinstaller
+# For insanely-fast-whisper
+insanely-fast-whisper
+torch
+# For Qwen2.5-VL support
+transformers
+qwen-vl-utils==0.0.9
+optimum
+accelerate
+Pillow==10.4.0
+torchvision
+# Add OpenTimelineIO for XML/EDL export
+opentimelineio
+otio-fcpx-xml-adapter 

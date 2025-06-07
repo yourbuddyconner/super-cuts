@@ -10,6 +10,32 @@ from math import ceil
 from dotenv import load_dotenv
 import base64
 import concurrent.futures
+from typing import Union
+from .export import generate_fcpxml # Import the new function
+
+# --- Local Transcription Imports ---
+# Added for insanely-fast-whisper
+LOCAL_TRANSCRIPTION_ERROR = None
+try:
+    import torch
+    from transformers import pipeline
+    from transformers.utils import is_flash_attn_2_available
+    LOCAL_TRANSCRIPTION_AVAILABLE = True
+    print("Local transcription dependencies installed.")
+except ImportError as e:
+    LOCAL_TRANSCRIPTION_AVAILABLE = False
+    LOCAL_TRANSCRIPTION_ERROR = e
+
+# --- Local LLM Analysis Imports ---
+LOCAL_ANALYSIS_ERROR = None
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+    from qwen_vl_utils import process_vision_info
+    LOCAL_ANALYSIS_AVAILABLE = True
+    print("Local analysis dependencies installed.")
+except ImportError as e:
+    LOCAL_ANALYSIS_AVAILABLE = False
+    LOCAL_ANALYSIS_ERROR = e
 
 load_dotenv()
 
@@ -107,10 +133,92 @@ def transcribe_audio(audio_path: Path) -> dict:
         full_text = " ".join([s['text'] for s in all_segments])
         return {"text": full_text, "segments": all_segments}
 
+def transcribe_audio_local(audio_path: Path) -> dict:
+    """Transcribes audio using a local, accelerated Whisper model."""
+    print("Transcribing audio locally...")
+    if not LOCAL_TRANSCRIPTION_AVAILABLE:
+        raise RuntimeError("Local transcription dependencies are not installed. Please run 'pip install torch transformers optimum accelerate'.")
+
+    # Determine device and dtype
+    if torch.cuda.is_available():
+        device = "cuda:0"
+        torch_dtype = torch.float16
+    elif torch.backends.mps.is_available():
+        device = "mps"
+        torch_dtype = torch.float16  # MPS also benefits from float16
+    else:
+        device = "cpu"
+        torch_dtype = torch.float32 # CPU handles float32 better
+
+    print(f"Using device: {device}")
+
+    # Create the pipeline
+    pipe = pipeline(
+        "automatic-speech-recognition",
+        model="distil-whisper/distil-large-v2",
+        torch_dtype=torch_dtype,
+        device=device,
+        model_kwargs={"attn_implementation": "flash_attention_2"} if is_flash_attn_2_available() else {"attn_implementation": "sdpa"},
+    )
+
+    # Perform transcription
+    outputs = pipe(
+        str(audio_path),
+        chunk_length_s=30,
+        batch_size=24, # You might need to adjust this based on your VRAM
+        return_timestamps=True,
+    )
+    
+    # The pipeline output provides 'text' and 'chunks' (which are equivalent to segments).
+    
+    raw_segments = outputs.get('chunks', [])
+    
+    # Reformat segments to match the structure expected by the rest of the script
+    # The pipeline returns {'text': '...', 'timestamp': (start, end)}
+    # We need {'text': '...', 'start': ..., 'end': ...}
+    reformatted_segments = []
+    for seg in raw_segments:
+        start_time, end_time = seg['timestamp']
+        reformatted_segments.append({
+            'text': seg['text'],
+            'start': start_time,
+            'end': end_time if end_time is not None else start_time + 1  # Handle open-ended segments
+        })
+
+    return {"text": outputs['text'], "segments": reformatted_segments}
+
 def encode_image(image_path: Path) -> str:
     """Encodes an image file to a base64 string."""
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")
+
+def extract_video_clip(video_path: Path, start_time: float, end_time: float) -> Path:
+    """Extracts a clip from a video file."""
+    clip_path = TEMP_DIR / f"clip_chunk_{uuid.uuid4()}.mp4"
+    duration = end_time - start_time
+    if duration <= 0:
+        raise ValueError("End time must be after start time for clip extraction.")
+        
+    print(f"Extracting video clip from {start_time:.2f}s to {end_time:.2f}s...")
+    try:
+        (
+            ffmpeg
+            .input(str(video_path), ss=start_time)
+            .output(
+                str(clip_path),
+                t=duration,
+                vcodec='libx264',
+                acodec='aac',
+                preset='fast', 
+                strict='-2' # Needed for some AAC encoder versions
+            )
+            .overwrite_output()
+            .run(quiet=True, capture_stdout=True, capture_stderr=True)
+        )
+        return clip_path
+    except ffmpeg.Error as e:
+        print(f"Error extracting video clip: {e.stderr.decode()}")
+        raise
 
 def extract_frames(video_path: Path, start_time: float, end_time: float, probe) -> list[Path]:
     """Extracts frames from the start, middle, and end of a time range."""
@@ -225,9 +333,87 @@ def analyze_chunk(video_path: Path, start_time: float, end_time: float, segments
         print(f"Error analyzing chunk {start_time}-{end_time}: {e}")
         return []
 
-def analyze_transcript(transcript: dict, video_path: Path, probe) -> list[dict]:
+def analyze_chunk_local(start_time: float, end_time: float, segments: list[dict], media_input: Union[Path, list[Path]], media_type: str, model, processor) -> list[dict]:
+    """Analyzes a single chunk of video/transcript with a local vision model."""
+    print(f"Analyzing chunk locally from {start_time:.2f}s to {end_time:.2f}s using {media_type}...")
+    
+    segments_text = "\n".join([
+        f"[{s['start']:.2f}-{s['end']:.2f}] {s['text']}"
+        for s in segments
+    ])
+
+    analysis_prompt = f"""
+    You are a video analyst finding key moments. Analyze the provided transcript segment and corresponding video frames to identify these moments.
+    The transcript covers the time from {start_time:.2f}s to {end_time:.2f}s of the video. The frames provide visual context.
+
+    SUGGESTED CATEGORIES:
+    - Key Speech or Presentation, Toast or Tribute, Funny Moment or Joke, Emotional or Heartfelt Moment, Important Announcement, Audience Reaction
+
+    TRANSCRIPT SEGMENT:
+    {segments_text}
+
+    Based on BOTH the transcript and images, return a JSON array of moments found ONLY within this segment.
+    Timestamps must be within [{start_time:.2f}, {end_time:.2f}].
+    Each moment must have: "category", "start_time", "end_time", "description".
+    Your entire response must be ONLY the JSON array, with no other text before or after it.
+    If no key moments are found, return an empty array [].
+    """
+
+    # The Qwen model expects a list of dictionaries for content
+    content = [{"type": "text", "text": analysis_prompt}]
+    if media_type == 'video' and isinstance(media_input, Path):
+        content.append({"type": "video", "video": str(media_input.resolve())})
+    elif media_type == 'image' and isinstance(media_input, list):
+        for frame_path in media_input:
+            content.append({"type": "image", "image": str(frame_path.resolve())})
+
+    messages = [{"role": "user", "content": content}]
+
+    try:
+        # Preparation for inference
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+
+        # Inference
+        generated_ids = model.generate(**inputs, max_new_tokens=1024)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+        
+        # The model output might have markdown formatting for the JSON block.
+        # Let's clean it up.
+        if output_text.strip().startswith("```json"):
+            output_text = output_text.strip()[7:-4]
+
+        moments_data = json.loads(output_text)
+        
+        valid_moments = []
+        if isinstance(moments_data, list):
+            for m in moments_data:
+                if isinstance(m, dict) and 'start_time' in m and 'end_time' in m:
+                    valid_moments.append(m)
+        return valid_moments
+
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"Error analyzing local chunk {start_time}-{end_time}: {e}")
+        print(f"Model output was: {output_text if 'output_text' in locals() else 'Not available'}")
+        return []
+
+def analyze_transcript(transcript: dict, video_path: Path, probe, analyzer: str, analysis_mode: str) -> list[dict]:
     """Analyzes transcript in chunks with visual context to find key moments."""
-    print("Analyzing transcript for key moments (with visual context)...")
+    print(f"Analyzing transcript for key moments (using {analyzer} analyzer)...")
 
     segments = transcript.get('segments')
     if not segments:
@@ -250,20 +436,58 @@ def analyze_transcript(transcript: dict, video_path: Path, probe) -> list[dict]:
         chunks.append((actual_chunk_start, actual_chunk_end, chunk_segments))
 
     all_moments = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_chunk = {
-            executor.submit(analyze_chunk, video_path, cs, ce, segs, probe): (cs, ce)
-            for cs, ce, segs in chunks
-        }
-        for future in concurrent.futures.as_completed(future_to_chunk):
-            cs, ce = future_to_chunk[future]
+
+    # --- Local Model Loading ---
+    if analyzer == 'local':
+        if not LOCAL_ANALYSIS_AVAILABLE:
+            print("Error: Local analysis dependencies not installed. Please check your setup.")
+            return []
+        print("Loading local analysis model (Qwen/Qwen2.5-VL-3B-Instruct)...")
+        local_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            "Qwen/Qwen2.5-VL-3B-Instruct", torch_dtype="auto", device_map="auto"
+        )
+        local_processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        
+        # Process chunks sequentially for local model to avoid VRAM OOM
+        for cs, ce, segs in chunks:
+            cleanup_paths = []
             try:
-                moments = future.result()
+                if analysis_mode == 'video_clip':
+                    clip_path = extract_video_clip(video_path, cs, ce)
+                    cleanup_paths.append(clip_path)
+                    moments = analyze_chunk_local(cs, ce, segs, clip_path, 'video', local_model, local_processor)
+                else: # default to keyframes
+                    frame_paths = extract_frames(video_path, cs, ce, probe)
+                    cleanup_paths.extend(frame_paths)
+                    moments = analyze_chunk_local(cs, ce, segs, frame_paths, 'image', local_model, local_processor)
+
                 if moments:
                     print(f"Found {len(moments)} moments in chunk {cs:.2f}-{ce:.2f}s.")
                     all_moments.extend(moments)
             except Exception as exc:
-                print(f'Chunk {cs:.2f}-{ce:.2f}s generated an exception: {exc}')
+                 print(f'Chunk {cs:.2f}-{ce:.2f}s generated an exception: {exc}')
+            finally:
+                # Cleanup frames or video clip
+                for p in cleanup_paths:
+                    if p.exists():
+                        p.unlink()
+
+    # --- OpenAI Parallel Processing ---
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_to_chunk = {
+                executor.submit(analyze_chunk, video_path, cs, ce, segs, probe): (cs, ce)
+                for cs, ce, segs in chunks
+            }
+            for future in concurrent.futures.as_completed(future_to_chunk):
+                cs, ce = future_to_chunk[future]
+                try:
+                    moments = future.result()
+                    if moments:
+                        print(f"Found {len(moments)} moments in chunk {cs:.2f}-{ce:.2f}s.")
+                        all_moments.extend(moments)
+                except Exception as exc:
+                    print(f'Chunk {cs:.2f}-{ce:.2f}s generated an exception: {exc}')
     
     if not all_moments:
         return []
@@ -359,14 +583,62 @@ def main():
     parser = argparse.ArgumentParser(description="Super Cuts")
     parser.add_argument("video_path", type=Path, help="Path to the video file to process.")
     parser.add_argument("--cleanup", action="store_true", help="Clean up the temporary directory after processing.")
+    parser.add_argument(
+        "--transcriber",
+        type=str,
+        default="openai",
+        choices=["openai", "local"],
+        help="Choose the transcription engine ('openai' or 'local')."
+    )
+    parser.add_argument(
+        "--analyzer",
+        type=str,
+        default="openai",
+        choices=["openai", "local"],
+        help="Choose the analysis engine ('openai' or 'local')."
+    )
+    parser.add_argument(
+        "--analysis-mode",
+        type=str,
+        default="keyframes",
+        choices=["keyframes", "video_clip"],
+        help="For local analyzer, choose how to provide visual context ('keyframes' or 'video_clip')."
+    )
+    parser.add_argument(
+        "--export-xml",
+        type=str,
+        default=None,
+        help="Generate an FCPXML file of the timeline. Provide a filename, e.g., 'my_timeline.fcpxml'."
+    )
     args = parser.parse_args()
+
+    if args.analyzer == 'openai' and args.analysis_mode != 'keyframes':
+        print("Warning: --analysis-mode is only applicable when using --analyzer 'local'. It will be ignored.")
+
+    if args.transcriber == 'local' and not LOCAL_TRANSCRIPTION_AVAILABLE:
+        print("Error: You've selected the 'local' transcriber, but the required libraries are not installed.")
+        if LOCAL_TRANSCRIPTION_ERROR:
+            print(f"Reason: {LOCAL_TRANSCRIPTION_ERROR}")
+        print("Please run: pip install -r requirements.txt")
+        return
+        
+    if args.analyzer == 'local' and not LOCAL_ANALYSIS_AVAILABLE:
+        print("Error: You've selected the 'local' analyzer, but the required libraries are not installed.")
+        if LOCAL_ANALYSIS_ERROR:
+            print(f"Reason: {LOCAL_ANALYSIS_ERROR}")
+        print("Please ensure all dependencies from requirements.txt are installed correctly.")
+        return
 
     if not args.video_path.exists():
         print(f"Error: Video file not found at {args.video_path}")
         return
 
-    if not OPENAI_API_KEY:
-        print("Error: OPENAI_API_KEY environment variable not set.")
+    if args.transcriber == 'openai' and not OPENAI_API_KEY:
+        print("Error: OPENAI_API_KEY environment variable not set for the 'openai' transcriber.")
+        return
+    
+    if args.analyzer == 'openai' and not OPENAI_API_KEY:
+        print("Error: OPENAI_API_KEY environment variable not set for the 'openai' analyzer.")
         return
         
     setup_directories()
@@ -382,12 +654,17 @@ def main():
                 transcript = json.load(f)
         else:
             audio_path = extract_audio(args.video_path)
-            transcript = transcribe_audio(audio_path)
+            
+            if args.transcriber == 'local':
+                transcript = transcribe_audio_local(audio_path)
+            else: # Default to openai
+                transcript = transcribe_audio(audio_path)
+
             with open(transcript_path, 'w') as f:
                 json.dump(transcript, f, indent=2)
             print(f"Transcript saved to {transcript_path}")
         
-        moments = analyze_transcript(transcript, args.video_path, probe)
+        moments = analyze_transcript(transcript, args.video_path, probe, args.analyzer, args.analysis_mode)
         
         # Save initial moments to temp directory for debugging
         moments_temp_path = TEMP_DIR / 'moments_raw.json'
@@ -405,7 +682,17 @@ def main():
         # Print summary
         successful_clips = sum(1 for m in updated_moments if m.get('generated', False))
         print(f"\nSummary: {successful_clips}/{len(moments)} clips generated successfully")
-    
+
+        # --- FCPXML Export ---
+        if args.export_xml:
+            xml_output_path = Path(args.export_xml)
+            # Ensure the output filename has the correct extension
+            if xml_output_path.suffix.lower() != '.fcpxml':
+                xml_output_path = xml_output_path.with_suffix('.fcpxml')
+            
+            generate_fcpxml(updated_moments, args.video_path, xml_output_path, probe)
+            print(f"FCPXML timeline saved to: {xml_output_path.resolve()}")
+
     except Exception as e:
         print(f"\nAn error occurred during processing: {e}")
     
