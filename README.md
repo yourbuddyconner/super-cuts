@@ -1,8 +1,10 @@
 # Super Cuts
 
-This project is a command-line Python script that automates the process of finding and extracting interesting moments from long videos, such as wedding recordings. It uses OpenAI's Whisper API for transcription and a GPT model for identifying key events like vows, toasts, and speeches.
+![Super Cuts](./hero.png)
 
-The script, called Super Cuts, processes a local video file, generates a transcript with precise timestamps, analyzes it to find meaningful moments, and then automatically generates separate video clips for each identified moment.
+Super Cuts is a powerful tool for video editors and creatives that automates finding and extracting key moments from long videos, such as wedding films or interviews. It streamlines the post-production workflow, saving hours of manual logging and review.
+
+It uses OpenAI's Whisper API to create a time-stamped transcript of your video's audio. Then, a GPT model analyzes the transcript to identify significant moments like vows, toasts, and speeches. Finally, Super Cuts automatically generates separate video clips for each key event, ready for you to use in your edit.
 
 ## Key Features
 
@@ -63,11 +65,10 @@ python process_video.py /path/to/your/video.mp4 --cleanup
 
 ## Output
 
--   **`output_clips/`**: This directory is where the generated video clips will be saved. Each clip is named with its category and description (e.g., `01_Toasts_A_toast_from_the_best_man.mp4`).
+-   **`output_clips/`**: This directory is where the generated video clips will be saved. Each clip is named with a sequential number (e.g., `clip_001.mp4`, `clip_002.mp4`). A `moments.json` file is also saved here, containing the metadata for each clip, including its description and category.
 -   **`temp/`**: This directory contains intermediate files created during processing. By default, these files are kept for debugging or inspection. It includes:
     -   `[video-name].mp3`: The extracted audio from the video.
     -   `transcript.json`: The full transcript from Whisper.
-    -   `moments.json`: The list of moments identified by the GPT model.
 
 ## Technologies Used
 
