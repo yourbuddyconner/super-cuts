@@ -1,3 +1,4 @@
 openai
 ffmpeg-python
-python-dotenv 
+python-dotenv
+pyinstaller 

@@ -2,3 +2,6 @@
 *.mkv
 temp/
 output_clips/
+dist/
+*.mp4
+.DS_Store
