@@ -1,4 +1,4 @@
 .env
 *.mkv
 temp/
-output_clips
+output_clips/
