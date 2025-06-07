@@ -1,0 +1,28 @@
+name: Cut New Release Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The new version tag to create (e.g., v1.0.1)'
+        required: true
+        type: string
+
+jobs:
+  tag-release:
+    name: Tag and Push Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create Git Tag
+        run: git tag ${{ github.event.inputs.version }}
+
+      - name: Push Git Tag
+        run: git push origin ${{ github.event.inputs.version }} 

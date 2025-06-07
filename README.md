@@ -13,8 +13,22 @@ It uses OpenAI's Whisper API to create a time-stamped transcript of your video's
 -   **Automatic Clip Generation**: Creates individual video clips for each identified moment using FFmpeg.
 -   **Large File Support**: Handles videos larger than Whisper's 25MB limit by automatically chunking the audio.
 -   **Local First**: Runs entirely on your local machine, with no need for web servers or databases.
+-   **Simple Installation**: Comes with a one-line command to install the tool on your system.
 
-## Prerequisites
+## Easy Installation (Recommended)
+
+You can install Super Cuts with a single command. This will download the latest version for your operating system (macOS or Linux) and make it available system-wide.
+
+```bash
+# Downloads and runs the installer script.
+curl -sSL https://raw.githubusercontent.com/yourbuddyconner/super-cuts/main/install.sh | sudo bash
+```
+
+After installation, you can run the tool from any directory using the `supercuts` command.
+
+---
+
+## Manual Setup
 
 Before you begin, ensure you have the following installed:
 
@@ -29,8 +43,8 @@ Before you begin, ensure you have the following installed:
 
 1.  **Clone the Repository**:
     ```bash
-    git clone <repository-url>
-    cd <repository-directory>
+    git clone https://github.com/yourbuddyconner/super-cuts.git
+    cd super-cuts
     ```
 
 2.  **Create a `.env` File**:
@@ -47,11 +61,16 @@ Before you begin, ensure you have the following installed:
 
 ## How to Run the Script
 
-The script is executed from the command line. You must provide the path to the video file you want to process.
+If you've installed the binary, you can run it directly. If you're running from the source, use `python3`.
 
-**Basic Usage**:
+**Installed Binary Usage**:
 ```bash
-python process_video.py /path/to/your/video.mp4
+supercuts /path/to/your/video.mp4
+```
+
+**Running from Source**:
+```bash
+python3 process_video.py /path/to/your/video.mp4
 ```
 
 This will run the full pipeline and leave the intermediate files (extracted audio, transcript, etc.) in the `temp/` directory for you to inspect.
@@ -60,12 +79,38 @@ This will run the full pipeline and leave the intermediate files (extracted audi
 If you want the script to automatically delete the `temp/` directory after it finishes, use the `--cleanup` flag.
 
 ```bash
-python process_video.py /path/to/your/video.mp4 --cleanup
+supercuts /path/to/your/video.mp4 --cleanup
 ```
+
+## For Developers
+
+### Building the Binary
+
+To create a new distributable binary, run the build script. This requires `python3`, `pip`, and all the packages in `requirements.txt`.
+
+```bash
+bash build.sh
+```
+
+The final binary will be located in the `dist/` directory.
+
+### Automated Releases
+
+This repository is configured with a GitHub Action that automates the release process. When you push a new tag in the format `v*.*.*` (e.g., `v1.0.1`), the action will:
+
+1.  Create a new GitHub Release.
+2.  Build binaries for both macOS and Linux.
+3.  Upload the `supercuts-macos` and `supercuts-linux` binaries to the release as assets.
+
+The `install.sh` script will automatically download the correct binary for the user's platform.
+
+### Cutting a New Release
+
+To create a new release, go to the **Actions** tab of the repository, select the **Cut New Release Tag** workflow, and click **Run workflow**. You will be prompted to enter a new version tag (e.g., `v1.0.2`). This will create and push the new tag, which in turn will trigger the automated release build.
 
 ## Output
 
--   **`output_clips/`**: This directory is where the generated video clips will be saved. Each clip is named with a sequential number (e.g., `clip_001.mp4`, `clip_002.mp4`). A `moments.json` file is also saved here, containing the metadata for each clip, including its description and category.
+-   **`output_clips/`**: This directory is where the generated video clips are saved. Each clip is named with its category and description (e.g., `01_Toasts_A_toast_from_the_best_man.mp4`).
 -   **`temp/`**: This directory contains intermediate files created during processing. By default, these files are kept for debugging or inspection. It includes:
     -   `[video-name].mp3`: The extracted audio from the video.
     -   `transcript.json`: The full transcript from Whisper.
