@@ -76,13 +76,21 @@ python3 -m supercuts /path/to/your/video.mp4
 
 ### Advanced Options
 
+**Using the Analyzer Pipeline**:
+By default, Super Cuts runs the `key_moments` analyzer. However, you can run a sequence of analyzers to perform multiple types of analysis on your video.
+
+```bash
+# Run both key moment detection and find interesting social media clips
+supercuts video.mp4 --analyzers key_moments,interesting_content
+```
+
 **Local Processing** (no internet required):
 ```bash
 # Use local models for both transcription and analysis
-supercuts video.mp4 --transcriber local --analyzer local
+supercuts video.mp4 --transcriber local --analyzer-engine local
 
 # Local analysis with video clips instead of keyframes (more accurate but slower)
-supercuts video.mp4 --analyzer local --analysis-mode video_clip
+supercuts video.mp4 --analyzer-engine local --analysis-mode video_clip
 ```
 
 **Export Timeline to Video Editor**:
@@ -98,11 +106,45 @@ supercuts video.mp4 --cleanup
 
 ### All Available Options
 
-- `--transcriber [openai|local]`: Choose transcription engine (default: openai)
-- `--analyzer [openai|local]`: Choose analysis engine (default: openai)
-- `--analysis-mode [keyframes|video_clip]`: For local analyzer, how to provide visual context (default: keyframes)
-- `--export-xml <filename>`: Generate an FCPXML timeline file
-- `--cleanup`: Remove temporary files after processing
+- `--analyzers <list>`: Comma-separated list of analyzers to run (e.g., `key_moments,interesting_content`). Default: `key_moments`.
+- `--transcriber [openai|local]`: Choose transcription engine (default: openai).
+- `--analyzer-engine [openai|local]`: Choose analysis engine for supported analyzers (default: openai).
+- `--analysis-mode [keyframes|video_clip]`: For local analyzer, how to provide visual context (default: keyframes).
+- `--export-xml <filename>`: Generate an FCPXML timeline file.
+- `--cleanup`: Remove temporary files after processing.
+
+## Analyzer Pipeline
+
+Super Cuts uses a flexible pipeline to analyze video content. This allows you to chain multiple analyzers together, where each analyzer processes the output of the previous one.
+
+### How it Works
+
+1.  **Initial Input**: The first analyzer in the pipeline receives the full video transcript.
+2.  **Sequential Processing**: Each subsequent analyzer receives the list of "moments" identified by the one before it.
+3.  **Final Output**: The list of moments from the final analyzer is used to generate video clips.
+
+This design allows for powerful, multi-stage analysis. For example, one analyzer could find broad "key moments," and a second analyzer could take those moments and find the most "shareable" sub-clips suitable for social media.
+
+### Available Analyzers
+
+-   `key_moments`: The default analyzer. It finds important events in a video like speeches, toasts, or emotional moments.
+-   `interesting_content`: Identifies highly-sharable clips (15-90s) for social media, focusing on funny, surprising, or quotable content.
+-   `chapter_analyzer`: Breaks long-form content (podcasts, lectures) into a structured outline with chapters based on topic transitions.
+-   `b_roll_analyzer`: (Placeholder) A demo analyzer that attempts to distinguish between A-roll (main speaker) and B-roll (cutaways).
+-   `logging_analyzer`: A debugging tool that prints the moments it receives from the previous pipeline step and passes them on unchanged.
+
+### Creating a Custom Analyzer
+
+You can extend Super Cuts by creating your own analyzer.
+
+1.  **Create a New File**: Add a new Python file in `src/supercuts/analyzers/` (e.g., `my_analyzer.py`).
+2.  **Define the Class**: Create a class that inherits from `BaseAnalyzer`. The class name must be the `CamelCase` version of your filename (e.g., `MyAnalyzer`).
+3.  **Implement `analyze` Method**: Your class must implement an `analyze` method that accepts `video_path`, `transcript`, `probe`, and `moments` as arguments.
+4.  **Run It**: You can now include your analyzer in the pipeline using its filename:
+
+    ```bash
+    supercuts video.mp4 --analyzers key_moments,my_analyzer
+    ```
 
 ## Output
 

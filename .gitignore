@@ -5,3 +5,5 @@ output_clips/
 dist/
 *.mp4
 .DS_Store
+*.fcpxml
+**/__pycache__/

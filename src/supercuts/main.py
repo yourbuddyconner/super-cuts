@@ -11,7 +11,9 @@ from dotenv import load_dotenv
 import base64
 import concurrent.futures
 from typing import Union
-from .export import generate_fcpxml # Import the new function
+from .export import generate_fcpxml
+from .pipeline import load_analyzers, run_pipeline
+from . import utils
 
 # --- Local Transcription Imports ---
 # Added for insanely-fast-whisper
@@ -27,6 +29,7 @@ except ImportError as e:
     LOCAL_TRANSCRIPTION_ERROR = e
 
 # --- Local LLM Analysis Imports ---
+# This is now handled within the KeyMomentsAnalyzer, but we might need it for arg checking.
 LOCAL_ANALYSIS_ERROR = None
 try:
     from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
@@ -591,18 +594,24 @@ def main():
         help="Choose the transcription engine ('openai' or 'local')."
     )
     parser.add_argument(
-        "--analyzer",
+        '--analyzers', 
+        type=str, 
+        default='key_moments',
+        help='Comma-separated list of analyzers to run in the pipeline (e.g., key_moments,another_analyzer).'
+    )
+    parser.add_argument(
+        "--analyzer-engine",
         type=str,
         default="openai",
         choices=["openai", "local"],
-        help="Choose the analysis engine ('openai' or 'local')."
+        help="Choose the analysis engine for analyzers that support it ('openai' or 'local')."
     )
     parser.add_argument(
         "--analysis-mode",
         type=str,
         default="keyframes",
         choices=["keyframes", "video_clip"],
-        help="For local analyzer, choose how to provide visual context ('keyframes' or 'video_clip')."
+        help="For local analyzer engine, choose how to provide visual context ('keyframes' or 'video_clip')."
     )
     parser.add_argument(
         "--export-xml",
@@ -612,8 +621,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.analyzer == 'openai' and args.analysis_mode != 'keyframes':
-        print("Warning: --analysis-mode is only applicable when using --analyzer 'local'. It will be ignored.")
+    # Backwards compatibility/warning for deprecated arguments
+    if any(arg in ['--analyzer'] for arg in os.sys.argv):
+        print("Warning: The '--analyzer' argument is deprecated. Please use '--analyzer-engine' instead.")
+        args.analyzer_engine = next((os.sys.argv[i+1] for i, v in enumerate(os.sys.argv) if v == '--analyzer'), args.analyzer_engine)
+
+    if args.analyzer_engine == 'openai' and args.analysis_mode != 'keyframes':
+        print("Warning: --analysis-mode is only applicable when using --analyzer-engine 'local'. It will be ignored.")
 
     if args.transcriber == 'local' and not LOCAL_TRANSCRIPTION_AVAILABLE:
         print("Error: You've selected the 'local' transcriber, but the required libraries are not installed.")
@@ -622,8 +636,8 @@ def main():
         print("Please run: pip install -r requirements.txt")
         return
         
-    if args.analyzer == 'local' and not LOCAL_ANALYSIS_AVAILABLE:
-        print("Error: You've selected the 'local' analyzer, but the required libraries are not installed.")
+    if args.analyzer_engine == 'local' and not LOCAL_ANALYSIS_AVAILABLE:
+        print("Error: You've selected the 'local' analyzer engine, but the required libraries are not installed.")
         if LOCAL_ANALYSIS_ERROR:
             print(f"Reason: {LOCAL_ANALYSIS_ERROR}")
         print("Please ensure all dependencies from requirements.txt are installed correctly.")
@@ -637,8 +651,8 @@ def main():
         print("Error: OPENAI_API_KEY environment variable not set for the 'openai' transcriber.")
         return
     
-    if args.analyzer == 'openai' and not OPENAI_API_KEY:
-        print("Error: OPENAI_API_KEY environment variable not set for the 'openai' analyzer.")
+    if args.analyzer_engine == 'openai' and not OPENAI_API_KEY:
+        print("Error: OPENAI_API_KEY environment variable not set for the 'openai' analyzer engine.")
         return
         
     setup_directories()
@@ -653,7 +667,7 @@ def main():
             with open(transcript_path, 'r') as f:
                 transcript = json.load(f)
         else:
-            audio_path = extract_audio(args.video_path)
+            audio_path = utils.extract_audio(args.video_path, TEMP_DIR)
             
             if args.transcriber == 'local':
                 transcript = transcribe_audio_local(audio_path)
@@ -664,7 +678,20 @@ def main():
                 json.dump(transcript, f, indent=2)
             print(f"Transcript saved to {transcript_path}")
         
-        moments = analyze_transcript(transcript, args.video_path, probe, args.analyzer, args.analysis_mode)
+        # --- Analyzer Pipeline ---
+        analyzer_names = [name.strip() for name in args.analyzers.split(',')]
+        
+        # This config will be passed to any analyzer that needs it.
+        analyzer_configs = {
+            "key_moments": {
+                "analyzer": args.analyzer_engine,
+                "analysis_mode": args.analysis_mode,
+            }
+            # Add other analyzer configs here if they are created
+        }
+        
+        analyzer_pipeline = load_analyzers(analyzer_names, analyzer_configs)
+        moments = run_pipeline(analyzer_pipeline, args.video_path, transcript, probe)
         
         # Save initial moments to temp directory for debugging
         moments_temp_path = TEMP_DIR / 'moments_raw.json'
@@ -673,7 +700,7 @@ def main():
         print(f"Raw moments saved to {moments_temp_path}")
 
         # Generate clips and get updated moments with clip metadata
-        updated_moments = generate_clips(args.video_path, moments)
+        updated_moments = utils.generate_clips(args.video_path, moments, OUTPUT_DIR)
 
         print("\nProcessing complete!")
         print(f"Clips saved in: {OUTPUT_DIR.resolve()}")
