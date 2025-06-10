@@ -4,7 +4,7 @@
 # It should be run from the root of the repository.
 
 # --- Configuration ---
-SCRIPT_NAME="process_video.py"
+SCRIPT_NAME="src/supercuts/main.py"
 BINARY_NAME="supercuts"
 DIST_DIR="dist"
 
@@ -52,6 +52,7 @@ function build_binary() {
         --distpath $DIST_DIR \
         --workpath build \
         --specpath . \
+        --paths src \
         $SCRIPT_NAME
 
     if [ $? -ne 0 ]; then
