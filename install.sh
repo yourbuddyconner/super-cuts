@@ -10,10 +10,25 @@ REPO_URL="https://github.com/yourbuddyconner/super-cuts"
 
 # --- Platform Detection ---
 OS_TYPE=$(uname -s)
+ARCH=$(uname -m)
+
 case "$OS_TYPE" in
-    Linux*)     ASSET_NAME="supercuts-linux";;
-    Darwin*)    ASSET_NAME="supercuts-macos";;
-    *)          echo "Error: Unsupported operating system '$OS_TYPE'."; exit 1;;
+    Linux*)     
+        case "$ARCH" in
+            x86_64) ASSET_NAME="supercuts-linux-x86_64";;
+            aarch64) ASSET_NAME="supercuts-linux-arm64";;
+            *)      echo "Error: Unsupported Linux architecture '$ARCH'. Only x86_64 and aarch64 are supported."; exit 1;;
+        esac
+        ;;
+    Darwin*)    
+        case "$ARCH" in
+            arm64)  ASSET_NAME="supercuts-macos-arm64";;
+            x86_64) ASSET_NAME="supercuts-macos-x86_64";;
+            *)      echo "Error: Unsupported macOS architecture '$ARCH'. Only arm64 and x86_64 are supported."; exit 1;;
+        esac
+        ;;
+    *)          
+        echo "Error: Unsupported operating system '$OS_TYPE'."; exit 1;;
 esac
 
 BINARY_URL="${REPO_URL}/releases/latest/download/${ASSET_NAME}"

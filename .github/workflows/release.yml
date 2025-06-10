@@ -49,10 +49,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            asset_name: supercuts-linux
-          - os: macos-latest
-            asset_name: supercuts-macos
+          - os: ubuntu-22.04 # x86_64
+            asset_name: supercuts-linux-x86_64
+          - os: ubuntu-22.04-arm # arm64
+            asset_name: supercuts-linux-arm64
+          - os: macos-14 # macos-14 is arm64
+            asset_name: supercuts-macos-arm64
+          - os: macos-13 # 13 is x86_64
+            asset_name: supercuts-macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out code
